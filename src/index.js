@@ -118,8 +118,9 @@ app.get("/test/logs/:id", (req, res) => {
  * DEVICE HEALTH ONLY
  * GET /test/health/esp32device1
  */
-app.get("/test/health/:id", (req, res) => {
-  res.json(deviceModel.getDevice(req.params.id).health);
+app.get("/health", (_, res) => {
+  console.log(`[${new Date().toISOString()}] Health check pinged`);
+  res.send("OK");
 });
 
 /************ BASIC HEALTH CHECK ************/
