@@ -2,12 +2,83 @@
 const express = require("express");
 const path = require("path");
 
-const deviceModel = require("./models/device.model");
-const longPoll = require("./helper/longPoll");
-
 const app = express();
 
-/************ APP CONFIG ************/
+/******************************************************
+ * IN-MEMORY DATABASE (No external files)
+ ******************************************************/
+const devices = {};
+
+/******************************************************
+ * DEVICE MODEL (Inline)
+ ******************************************************/
+const deviceModel = {
+  getDevice(deviceId) {
+    if (!devices[deviceId]) {
+      devices[deviceId] = {
+        commandQueue: [],
+        logs: [],
+        health: {},
+        results: []
+      };
+    }
+    return devices[deviceId];
+  },
+
+  queueCommand(deviceId, command) {
+    const device = this.getDevice(deviceId);
+    device.commandQueue.push(command);
+  },
+
+  getCommand(deviceId) {
+    const device = this.getDevice(deviceId);
+    return device.commandQueue.shift();
+  },
+
+  saveResult(deviceId, result) {
+    const device = this.getDevice(deviceId);
+    device.results.push(result);
+  },
+
+  saveHealth(deviceId, health) {
+    const device = this.getDevice(deviceId);
+    device.health = health;
+  },
+
+  pushLog(deviceId, log) {
+    const device = this.getDevice(deviceId);
+    device.logs.push({
+      log,
+      ts: Date.now()
+    });
+  }
+};
+
+/******************************************************
+ * LONG POLLING (Inline)
+ ******************************************************/
+async function longPoll(fn, timeout = 30000, interval = 1000) {
+  const start = Date.now();
+
+  return new Promise((resolve) => {
+    const check = async () => {
+      const result = await fn();
+      if (result) return resolve(result);
+
+      if (Date.now() - start > timeout) {
+        return resolve(null);
+      }
+
+      setTimeout(check, interval);
+    };
+
+    check();
+  });
+}
+
+/******************************************************
+ * APP CONFIG
+ ******************************************************/
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -15,15 +86,17 @@ app.set("view engine", "hbs");
 app.set("views", path.join(__dirname, "views"));
 app.use(express.static(path.join(__dirname, "public")));
 
-/************ ESP32 DEVICE ENDPOINTS ************/
+/******************************************************
+ * ESP32 DEVICE ENDPOINTS
+ ******************************************************/
 
 /**
  * LONG POLL FOR COMMANDS
- * GET /device/commands?device_id=esp32device1
  */
 app.get("/device/commands", async (req, res) => {
   const deviceId = req.query.device_id;
-  if (!deviceId) return res.status(400).json({ error: "device_id required" });
+  if (!deviceId)
+    return res.status(400).json({ error: "device_id required" });
 
   const command = await longPoll(
     () => deviceModel.getCommand(deviceId),
@@ -35,7 +108,6 @@ app.get("/device/commands", async (req, res) => {
 
 /**
  * REPORT COMMAND RESULT
- * POST /device/report
  */
 app.post("/device/report", (req, res) => {
   const { device_id, action, result } = req.body;
@@ -52,7 +124,6 @@ app.post("/device/report", (req, res) => {
 
 /**
  * DEVICE HEALTH
- * POST /device/health
  */
 app.post("/device/health", (req, res) => {
   const { device_id, ...health } = req.body;
@@ -68,7 +139,6 @@ app.post("/device/health", (req, res) => {
 
 /**
  * DEVICE LOGS
- * POST /device/log
  */
 app.post("/device/log", (req, res) => {
   const { device_id, log } = req.body;
@@ -78,56 +148,58 @@ app.post("/device/log", (req, res) => {
   res.json({ status: "ok" });
 });
 
-/************ PUBLIC TESTING ENDPOINTS (GET BASED) ************/
+/******************************************************
+ * PUBLIC TESTING ENDPOINTS
+ ******************************************************/
 
 /**
- * SEND COMMAND (GET FOR EASY TESTING)
+ * SEND COMMAND
+ * Example:
  * /test/command?device_id=esp32device1&action=relay_on
- * /test/command?device_id=esp32device1&action=ota_update&url=http://x/firmware.bin
  */
 app.get("/test/command", (req, res) => {
   const { device_id, action, url } = req.query;
   if (!device_id || !action) {
-    return res.status(400).json({ error: "device_id & action required" });
+    return res
+      .status(400)
+      .json({ error: "device_id & action required" });
   }
 
   const payload = {};
   if (url) payload.url = url;
 
   deviceModel.queueCommand(device_id, { action, payload });
+
   res.json({ status: "queued", device_id, action, payload });
 });
 
 /**
  * FULL DEVICE STATE
- * GET /test/device/esp32device1
  */
 app.get("/test/device/:id", (req, res) => {
   res.json(deviceModel.getDevice(req.params.id));
 });
 
 /**
- * DEVICE LOGS ONLY
- * GET /test/logs/esp32device1
+ * DEVICE LOGS
  */
 app.get("/test/logs/:id", (req, res) => {
   res.json(deviceModel.getDevice(req.params.id).logs);
 });
 
 /**
- * DEVICE HEALTH ONLY
- * GET /test/health/esp32device1
+ * BASIC HEALTH CHECK
  */
 app.get("/health", (_, res) => {
   console.log(`[${new Date().toISOString()}] Health check pinged`);
   res.send("OK");
 });
 
-/************ BASIC HEALTH CHECK ************/
-app.get("/health", (_, res) => res.send("OK"));
+/******************************************************
+ * START SERVER (Render Compatible)
+ ******************************************************/
+const PORT = process.env.PORT || 3000;
 
-/************ START SERVER ************/
-const PORT = 3000;
 app.listen(PORT, () => {
-  console.log(`ESP32 Proxy running on http://localhost:${PORT}`);
+  console.log(`ESP32 Proxy running on port ${PORT}`);
 });
