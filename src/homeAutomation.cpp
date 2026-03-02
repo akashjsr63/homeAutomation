@@ -1,132 +1,330 @@
-// src/index.js
-const express = require("express");
-const path = require("path");
+/******************************************************
+ *  PRODUCTION-READY ESP32 IoT CLIENT
+ ******************************************************/
 
-const deviceModel = require("./models/device.model");
-const longPoll = require("./helper/longPoll");
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <Update.h>
+#include <ArduinoOTA.h>
+#include <BluetoothSerial.h>
 
-const app = express();
+/************ CONFIGURATION ************/
 
-/************ APP CONFIG ************/
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+#define DEVICE_ID "esp32device1"
+#define RELAY_PIN 5
+#define LED_PIN 2
 
-app.set("view engine", "hbs");
-app.set("views", path.join(__dirname, "views"));
-app.use(express.static(path.join(__dirname, "public")));
+const char* WIFI_SSIDS[] = {"KK", "JioFiber-5GMMs"};
+const char* WIFI_PASSWORDS[] = {"qwerty63", "12345678"};
+const int WIFI_COUNT = 2;
 
-/************ ESP32 DEVICE ENDPOINTS ************/
+const char* PROXY_BASE = "http://YOUR_PROXY_URL";
 
-/**
- * LONG POLL FOR COMMANDS
- * GET /device/commands?device_id=esp32device1
- */
-app.get("/device/commands", async (req, res) => {
-  const deviceId = req.query.device_id;
-  if (!deviceId) return res.status(400).json({ error: "device_id required" });
+/************ GLOBALS ************/
 
-  const command = await longPoll(
-    () => deviceModel.getCommand(deviceId),
-    30000
-  );
+BluetoothSerial SerialBT;
 
-  res.json(command || { action: "none" });
-});
+unsigned long lastPoll = 0;
+unsigned long lastHealth = 0;
 
-/**
- * REPORT COMMAND RESULT
- * POST /device/report
- */
-app.post("/device/report", (req, res) => {
-  const { device_id, action, result } = req.body;
-  if (!device_id) return res.status(400).end();
+/******************************************************
+ * LOG SERVICE
+ ******************************************************/
+void pushLog(String message) {
+  if (WiFi.status() != WL_CONNECTED) return;
 
-  deviceModel.saveResult(device_id, {
-    action,
-    result,
-    ts: Date.now()
-  });
+  HTTPClient http;
+  http.begin(String(PROXY_BASE) + "/device/log");
+  http.addHeader("Content-Type", "application/json");
 
-  res.json({ status: "ok" });
-});
+  StaticJsonDocument<256> doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["log"] = message;
 
-/**
- * DEVICE HEALTH
- * POST /device/health
- */
-app.post("/device/health", (req, res) => {
-  const { device_id, ...health } = req.body;
-  if (!device_id) return res.status(400).end();
+  String body;
+  serializeJson(doc, body);
 
-  deviceModel.saveHealth(device_id, {
-    ...health,
-    ts: Date.now()
-  });
-
-  res.json({ status: "ok" });
-});
-
-/**
- * DEVICE LOGS
- * POST /device/log
- */
-app.post("/device/log", (req, res) => {
-  const { device_id, log } = req.body;
-  if (!device_id || !log) return res.status(400).end();
-
-  deviceModel.pushLog(device_id, log);
-  res.json({ status: "ok" });
-});
-
-/************ PUBLIC TESTING ENDPOINTS (GET BASED) ************/
-
-/**
- * SEND COMMAND (GET FOR EASY TESTING)
- * /test/command?device_id=esp32device1&action=relay_on
- * /test/command?device_id=esp32device1&action=ota_update&url=http://x/firmware.bin
- */
-app.get("/test/command", (req, res) => {
-  const { device_id, action, url } = req.query;
-  if (!device_id || !action) {
-    return res.status(400).json({ error: "device_id & action required" });
+  int code = http.POST(body);
+  if (code <= 0) {
+    Serial.println("Log HTTP error");
   }
 
-  const payload = {};
-  if (url) payload.url = url;
+  http.end();
+}
 
-  deviceModel.queueCommand(device_id, { action, payload });
-  res.json({ status: "queued", device_id, action, payload });
-});
+/******************************************************
+ * WIFI MANAGER (Strongest Network Auto)
+ ******************************************************/
+void connectToStrongestWiFi() {
+  Serial.println("Scanning WiFi...");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true);
+  delay(100);
 
-/**
- * FULL DEVICE STATE
- * GET /test/device/esp32device1
- */
-app.get("/test/device/:id", (req, res) => {
-  res.json(deviceModel.getDevice(req.params.id));
-});
+  int n = WiFi.scanNetworks();
+  int bestRSSI = -9999;
+  int bestIndex = -1;
 
-/**
- * DEVICE LOGS ONLY
- * GET /test/logs/esp32device1
- */
-app.get("/test/logs/:id", (req, res) => {
-  res.json(deviceModel.getDevice(req.params.id).logs);
-});
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < WIFI_COUNT; j++) {
+      if (WiFi.SSID(i) == WIFI_SSIDS[j]) {
+        if (WiFi.RSSI(i) > bestRSSI) {
+          bestRSSI = WiFi.RSSI(i);
+          bestIndex = j;
+        }
+      }
+    }
+  }
 
-/**
- * DEVICE HEALTH ONLY
- * GET /test/health/esp32device1
- */
-app.get("/test/health/:id", (req, res) => {
-  res.json(deviceModel.getDevice(req.params.id).health);
-});
+  if (bestIndex >= 0) {
+    Serial.println("Connecting to: " + String(WIFI_SSIDS[bestIndex]));
+    WiFi.begin(WIFI_SSIDS[bestIndex], WIFI_PASSWORDS[bestIndex]);
 
-/************ BASIC HEALTH CHECK ************/
-app.get("/health", (_, res) => res.send("OK"));
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+      delay(500);
+      Serial.print(".");
+    }
 
-/************ START SERVER ************/
-const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`ESP32 Proxy running on http://localhost:${PORT}`);
-});
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nConnected!");
+      pushLog("Connected to WiFi: " + String(WIFI_SSIDS[bestIndex]));
+    } else {
+      Serial.println("\nWiFi connection failed");
+    }
+  } else {
+    Serial.println("No known WiFi found");
+  }
+}
+
+/******************************************************
+ * HEALTH SERVICE
+ ******************************************************/
+void sendHealth() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  http.begin(String(PROXY_BASE) + "/device/health");
+  http.addHeader("Content-Type", "application/json");
+
+  StaticJsonDocument<256> doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["ip"] = WiFi.localIP().toString();
+  doc["rssi"] = WiFi.RSSI();
+  doc["heap"] = ESP.getFreeHeap();
+  doc["uptime"] = millis();
+
+  String body;
+  serializeJson(doc, body);
+
+  int code = http.POST(body);
+  if (code <= 0) {
+    Serial.println("Health HTTP error");
+  }
+
+  http.end();
+}
+
+/******************************************************
+ * REPORT RESULT
+ ******************************************************/
+void reportResult(String action, String result) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  http.begin(String(PROXY_BASE) + "/device/report");
+  http.addHeader("Content-Type", "application/json");
+
+  StaticJsonDocument<256> doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["action"] = action;
+  doc["result"] = result;
+
+  String body;
+  serializeJson(doc, body);
+
+  int code = http.POST(body);
+  if (code <= 0) {
+    Serial.println("Report HTTP error");
+  }
+
+  http.end();
+}
+
+/******************************************************
+ * OTA SERVICE (HTTP)
+ ******************************************************/
+void performOTA(String firmwareURL) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  pushLog("Starting OTA...");
+
+  HTTPClient http;
+  http.begin(firmwareURL);
+
+  int code = http.GET();
+  if (code == 200) {
+
+    int len = http.getSize();
+    WiFiClient * stream = http.getStreamPtr();
+
+    if (!Update.begin(len)) {
+      pushLog("OTA Begin Failed");
+      http.end();
+      return;
+    }
+
+    size_t written = Update.writeStream(*stream);
+
+    if (written != len) {
+      pushLog("OTA Write Failed");
+      http.end();
+      return;
+    }
+
+    if (Update.end()) {
+      if (Update.isFinished()) {
+        pushLog("OTA Success. Rebooting...");
+        delay(1000);
+        ESP.restart();
+      } else {
+        pushLog("OTA not finished");
+      }
+    } else {
+      pushLog("OTA End Failed");
+    }
+
+  } else {
+    pushLog("OTA HTTP Failed");
+  }
+
+  http.end();
+}
+
+/******************************************************
+ * DEVICE CONTROLLER
+ ******************************************************/
+void executeCommand(String action, JsonObject payload) {
+
+  if (action == "relay_on") {
+    digitalWrite(RELAY_PIN, HIGH);
+  }
+  else if (action == "relay_off") {
+    digitalWrite(RELAY_PIN, LOW);
+  }
+  else if (action == "led_toggle") {
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+  }
+  else if (action == "ota_update") {
+    if (payload.containsKey("url")) {
+      String url = payload["url"].as<String>();
+      performOTA(url);
+    }
+  }
+}
+
+/******************************************************
+ * LONG POLLING CLIENT
+ ******************************************************/
+void pollProxy() {
+
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  http.setTimeout(35000);
+  http.begin(String(PROXY_BASE) + "/device/commands?device_id=" + DEVICE_ID);
+
+  int code = http.GET();
+
+  if (code == 200) {
+
+    String payload = http.getString();
+
+    StaticJsonDocument<512> doc;
+    DeserializationError err = deserializeJson(doc, payload);
+
+    if (!err && doc.containsKey("action")) {
+
+      String action = doc["action"].as<String>();
+
+      JsonObject data;
+      if (doc.containsKey("payload")) {
+        data = doc["payload"].as<JsonObject>();
+      }
+
+      if (action != "none") {
+        executeCommand(action, data);
+        reportResult(action, "success");
+      }
+    }
+  } else {
+    Serial.println("Poll HTTP error");
+  }
+
+  http.end();
+}
+
+/******************************************************
+ * BLUETOOTH SERVICE
+ ******************************************************/
+void setupBluetooth() {
+  SerialBT.begin("ESP32_BT");
+  pushLog("Bluetooth started");
+}
+
+/******************************************************
+ * ARDUINO OTA
+ ******************************************************/
+void setupOTA() {
+  ArduinoOTA.setHostname(DEVICE_ID);
+  ArduinoOTA.begin();
+}
+
+/******************************************************
+ * SETUP
+ ******************************************************/
+void setup() {
+
+  Serial.begin(115200);
+
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+
+  connectToStrongestWiFi();
+  setupBluetooth();
+  setupOTA();
+
+  sendHealth();
+}
+
+/******************************************************
+ * LOOP
+ ******************************************************/
+void loop() {
+
+  ArduinoOTA.handle();
+
+  // Auto reconnect WiFi
+  if (WiFi.status() != WL_CONNECTED) {
+    connectToStrongestWiFi();
+  }
+
+  // Poll every 3 seconds
+  if (millis() - lastPoll > 3000) {
+    pollProxy();
+    lastPoll = millis();
+  }
+
+  // Send health every 60 seconds
+  if (millis() - lastHealth > 60000) {
+    sendHealth();
+    lastHealth = millis();
+  }
+
+  // Bluetooth logging
+  if (SerialBT.available()) {
+    String cmd = SerialBT.readString();
+    pushLog("BT Command: " + cmd);
+  }
+}
