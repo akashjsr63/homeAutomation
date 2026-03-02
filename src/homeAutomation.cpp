@@ -7,7 +7,6 @@
 #include <ArduinoJson.h>
 #include <Update.h>
 #include <ArduinoOTA.h>
-#include <BluetoothSerial.h>
 
 /************ CONFIGURATION ************/
 
@@ -22,8 +21,6 @@ const int WIFI_COUNT = 2;
 const char* PROXY_BASE = "https://homeautomation-6446.onrender.com";
 
 /************ GLOBALS ************/
-
-BluetoothSerial SerialBT;
 
 unsigned long lastPoll = 0;
 unsigned long lastHealth = 0;
@@ -167,7 +164,7 @@ void performOTA(String firmwareURL) {
   if (code == 200) {
 
     int len = http.getSize();
-    WiFiClient * stream = http.getStreamPtr();
+    WiFiClient* stream = http.getStreamPtr();
 
     if (!Update.begin(len)) {
       pushLog("OTA Begin Failed");
@@ -266,14 +263,6 @@ void pollProxy() {
 }
 
 /******************************************************
- * BLUETOOTH SERVICE
- ******************************************************/
-void setupBluetooth() {
-  SerialBT.begin("ESP32_BT");
-  pushLog("Bluetooth started");
-}
-
-/******************************************************
  * ARDUINO OTA
  ******************************************************/
 void setupOTA() {
@@ -292,7 +281,6 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
 
   connectToStrongestWiFi();
-  setupBluetooth();
   setupOTA();
 
   sendHealth();
@@ -320,11 +308,5 @@ void loop() {
   if (millis() - lastHealth > 60000) {
     sendHealth();
     lastHealth = millis();
-  }
-
-  // Bluetooth logging
-  if (SerialBT.available()) {
-    String cmd = SerialBT.readString();
-    pushLog("BT Command: " + cmd);
   }
 }
