@@ -19,7 +19,7 @@ const char* WIFI_SSIDS[] = {"KK", "JioFiber-5GMMs"};
 const char* WIFI_PASSWORDS[] = {"qwerty63", "12345678"};
 const int WIFI_COUNT = 2;
 
-const char* PROXY_BASE = "http://YOUR_PROXY_URL";
+const char* PROXY_BASE = "https://homeautomation-6446.onrender.com";
 
 /************ GLOBALS ************/
 
