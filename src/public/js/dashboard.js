@@ -19,6 +19,11 @@ function setupEventListeners() {
     document.getElementById('logDeviceFilter').addEventListener('change', loadLogs);
     document.getElementById('commandAction').addEventListener('change', toggleOtaUrl);
     document.getElementById('commandForm').addEventListener('submit', handleCommandSubmit);
+    
+    const otaForm = document.getElementById('otaForm');
+    if (otaForm) {
+        otaForm.addEventListener('submit', handleOtaSubmit);
+    }
 }
 
 // Update statistics
@@ -106,6 +111,7 @@ function updateDeviceList(devices) {
                     <button class="btn btn-sm btn-primary" onclick="sendCommand('${device.deviceId}', 'relay_on')">Relay ON</button>
                     <button class="btn btn-sm btn-primary" onclick="sendCommand('${device.deviceId}', 'relay_off')">Relay OFF</button>
                     <button class="btn btn-sm btn-secondary" onclick="sendCommand('${device.deviceId}', 'led_toggle')">Toggle LED</button>
+                    <button class="btn btn-sm btn-warning" onclick="openOtaModal('${device.deviceId}')">🔄 OTA Update</button>
                     <button class="btn btn-sm btn-info" onclick="viewLogs('${device.deviceId}')">View Logs</button>
                 </div>
             </div>
@@ -251,6 +257,87 @@ function closeLogsModal() {
     currentLogsDevice = null;
 }
 
+// Open OTA modal
+function openOtaModal(deviceId) {
+    const modal = document.getElementById('otaModal');
+    document.getElementById('otaDeviceId').value = deviceId;
+    document.getElementById('otaFirmwareUrl').value = '';
+    document.getElementById('otaConfirm').checked = false;
+    document.getElementById('otaStatus').style.display = 'none';
+    modal.classList.add('show');
+}
+
+// Close OTA modal
+function closeOtaModal() {
+    document.getElementById('otaModal').classList.remove('show');
+    document.getElementById('otaForm').reset();
+    document.getElementById('otaStatus').style.display = 'none';
+}
+
+// Handle OTA form submit
+function handleOtaSubmit(e) {
+    e.preventDefault();
+    
+    const deviceId = document.getElementById('otaDeviceId').value;
+    const firmwareUrl = document.getElementById('otaFirmwareUrl').value;
+    const statusDiv = document.getElementById('otaStatus');
+    
+    if (!firmwareUrl) {
+        statusDiv.innerHTML = '<div class="alert alert-error">Please enter a firmware URL</div>';
+        statusDiv.style.display = 'block';
+        return;
+    }
+    
+    // Validate URL
+    try {
+        new URL(firmwareUrl);
+    } catch (error) {
+        statusDiv.innerHTML = '<div class="alert alert-error">Invalid URL format</div>';
+        statusDiv.style.display = 'block';
+        return;
+    }
+    
+    statusDiv.innerHTML = '<div class="alert alert-info">Sending OTA update command...</div>';
+    statusDiv.style.display = 'block';
+    
+    fetch('/api/command', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            deviceId,
+            action: 'ota_update',
+            url: firmwareUrl
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            statusDiv.innerHTML = `
+                <div class="alert alert-success">
+                    <strong>✅ OTA Update Initiated!</strong><br>
+                    Command queued successfully. The device will download and install the firmware from:<br>
+                    <code>${firmwareUrl}</code><br><br>
+                    <small>The device will reboot after a successful update. Check the logs to monitor progress.</small>
+                </div>
+            `;
+            
+            // Close modal after 3 seconds
+            setTimeout(() => {
+                closeOtaModal();
+                refreshDashboard();
+            }, 3000);
+        } else {
+            statusDiv.innerHTML = `<div class="alert alert-error">Error: ${data.error || 'Failed to initiate OTA update'}</div>`;
+        }
+    })
+    .catch(error => {
+        console.error('Error initiating OTA update:', error);
+        statusDiv.innerHTML = '<div class="alert alert-error">Failed to initiate OTA update. Please try again.</div>';
+    });
+}
+
 // Load logs
 async function loadLogs() {
     const container = document.getElementById('logsContainer');
@@ -333,11 +420,15 @@ function escapeHtml(text) {
 window.onclick = function(event) {
     const commandModal = document.getElementById('commandModal');
     const logsModal = document.getElementById('logsModal');
+    const otaModal = document.getElementById('otaModal');
     
     if (event.target === commandModal) {
         closeModal();
     }
     if (event.target === logsModal) {
         closeLogsModal();
+    }
+    if (event.target === otaModal) {
+        closeOtaModal();
     }
 }
