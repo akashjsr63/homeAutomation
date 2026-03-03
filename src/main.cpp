@@ -3,6 +3,7 @@
  ******************************************************/
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <Update.h>
@@ -42,19 +43,14 @@ void pushLog(String message) {
   String body;
   serializeJson(doc, body);
 
-  int code = http.POST(body);
-  if (code <= 0) {
-    Serial.println("Log HTTP error");
-  }
-
+  http.POST(body);
   http.end();
 }
 
 /******************************************************
- * WIFI MANAGER (Strongest Network Auto)
+ * WIFI MANAGER
  ******************************************************/
 void connectToStrongestWiFi() {
-  Serial.println("Scanning WiFi...");
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true);
   delay(100);
@@ -65,33 +61,24 @@ void connectToStrongestWiFi() {
 
   for (int i = 0; i < n; i++) {
     for (int j = 0; j < WIFI_COUNT; j++) {
-      if (WiFi.SSID(i) == WIFI_SSIDS[j]) {
-        if (WiFi.RSSI(i) > bestRSSI) {
-          bestRSSI = WiFi.RSSI(i);
-          bestIndex = j;
-        }
+      if (WiFi.SSID(i) == WIFI_SSIDS[j] && WiFi.RSSI(i) > bestRSSI) {
+        bestRSSI = WiFi.RSSI(i);
+        bestIndex = j;
       }
     }
   }
 
   if (bestIndex >= 0) {
-    Serial.println("Connecting to: " + String(WIFI_SSIDS[bestIndex]));
     WiFi.begin(WIFI_SSIDS[bestIndex], WIFI_PASSWORDS[bestIndex]);
 
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
       delay(500);
-      Serial.print(".");
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nConnected!");
       pushLog("Connected to WiFi: " + String(WIFI_SSIDS[bestIndex]));
-    } else {
-      Serial.println("\nWiFi connection failed");
     }
-  } else {
-    Serial.println("No known WiFi found");
   }
 }
 
@@ -115,11 +102,7 @@ void sendHealth() {
   String body;
   serializeJson(doc, body);
 
-  int code = http.POST(body);
-  if (code <= 0) {
-    Serial.println("Health HTTP error");
-  }
-
+  http.POST(body);
   http.end();
 }
 
@@ -141,90 +124,62 @@ void reportResult(String action, String result) {
   String body;
   serializeJson(doc, body);
 
-  int code = http.POST(body);
-  if (code <= 0) {
-    Serial.println("Report HTTP error");
-  }
-
+  http.POST(body);
   http.end();
 }
 
 /******************************************************
- * OTA SERVICE (HTTP)
+ * OTA SERVICE (HTTPS + Redirect Fix)
  ******************************************************/
 void performOTA(String firmwareURL) {
   if (WiFi.status() != WL_CONNECTED) {
-    pushLog("OTA Update failed: WiFi not connected");
-    Serial.println("OTA Update failed: WiFi not connected");
+    pushLog("OTA failed: WiFi not connected");
     return;
   }
 
-  pushLog("Starting OTA update from: " + firmwareURL);
-  Serial.println("Starting OTA update from: " + firmwareURL);
+  pushLog("Starting OTA from: " + firmwareURL);
+
+  WiFiClientSecure client;
+  client.setInsecure();  // Skip certificate validation
 
   HTTPClient http;
-  http.begin(firmwareURL);
-  http.setTimeout(30000); // 30 second timeout
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.begin(client, firmwareURL);
+  http.setTimeout(30000);
 
-  pushLog("Downloading firmware...");
-  Serial.println("Downloading firmware...");
-  
   int code = http.GET();
-  if (code == 200) {
+
+  if (code == HTTP_CODE_OK) {
 
     int len = http.getSize();
-    pushLog("Firmware size: " + String(len) + " bytes");
-    Serial.println("Firmware size: " + String(len) + " bytes");
+    WiFiClient *stream = http.getStreamPtr();
 
-    WiFiClient* stream = http.getStreamPtr();
-
-    pushLog("Initializing OTA update...");
-    Serial.println("Initializing OTA update...");
-    
     if (!Update.begin(len)) {
-      String errorMsg = "OTA Begin Failed. Error: " + String(Update.errorString());
-      pushLog(errorMsg);
-      Serial.println(errorMsg);
+      pushLog("OTA Begin Failed");
       http.end();
       return;
     }
 
-    pushLog("Writing firmware to flash...");
-    Serial.println("Writing firmware to flash...");
-    
     size_t written = Update.writeStream(*stream);
 
     if (written != len) {
-      String errorMsg = "OTA Write Failed. Written: " + String(written) + "/" + String(len);
-      pushLog(errorMsg);
-      Serial.println(errorMsg);
+      pushLog("OTA Write Failed");
       http.end();
       return;
     }
 
-    pushLog("Finalizing OTA update...");
-    Serial.println("Finalizing OTA update...");
-    
-    if (Update.end()) {
-      if (Update.isFinished()) {
-        pushLog("OTA Update successful! Firmware installed. Rebooting in 2 seconds...");
-        Serial.println("OTA Update successful! Rebooting...");
-        delay(2000);
-        ESP.restart();
-      } else {
-        pushLog("OTA Update not finished properly");
-        Serial.println("OTA Update not finished properly");
-      }
-    } else {
-      String errorMsg = "OTA End Failed. Error: " + String(Update.errorString());
-      pushLog(errorMsg);
-      Serial.println(errorMsg);
+    if (!Update.end() || !Update.isFinished()) {
+      pushLog("OTA End Failed");
+      http.end();
+      return;
     }
 
+    pushLog("OTA Success. Rebooting...");
+    delay(2000);
+    ESP.restart();
+
   } else {
-    String errorMsg = "OTA HTTP Failed. Code: " + String(code);
-    pushLog(errorMsg);
-    Serial.println(errorMsg);
+    pushLog("OTA HTTP Failed. Code: " + String(code));
   }
 
   http.end();
@@ -235,59 +190,25 @@ void performOTA(String firmwareURL) {
  ******************************************************/
 void executeCommand(String action, JsonObject payload) {
 
-  // Log before command execution
-  pushLog("Executing command: " + action);
-  Serial.println("Executing command: " + action);
-
-  bool success = false;
-  String resultMessage = "";
+  pushLog("Executing: " + action);
 
   if (action == "relay_on") {
     digitalWrite(RELAY_PIN, HIGH);
-    success = true;
-    resultMessage = "Relay turned ON";
-    Serial.println("Relay turned ON");
   }
   else if (action == "relay_off") {
     digitalWrite(RELAY_PIN, LOW);
-    success = true;
-    resultMessage = "Relay turned OFF";
-    Serial.println("Relay turned OFF");
   }
   else if (action == "led_toggle") {
-    bool currentState = digitalRead(LED_PIN);
-    digitalWrite(LED_PIN, !currentState);
-    success = true;
-    resultMessage = "LED toggled to " + String(!currentState ? "ON" : "OFF");
-    Serial.println("LED toggled to " + String(!currentState ? "ON" : "OFF"));
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
   }
   else if (action == "ota_update") {
     if (payload.containsKey("url")) {
-      String url = payload["url"].as<String>();
-      pushLog("OTA Update requested from: " + url);
-      performOTA(url);
-      // Note: performOTA handles its own logging and may reboot
-      return; // Exit early as OTA may reboot
-    } else {
-      success = false;
-      resultMessage = "OTA URL missing in payload";
-      Serial.println("OTA Update failed: URL missing");
+      performOTA(payload["url"].as<String>());
+      return;
     }
   }
-  else {
-    success = false;
-    resultMessage = "Unknown command: " + action;
-    Serial.println("Unknown command: " + action);
-  }
 
-  // Log after command execution
-  if (success) {
-    pushLog("Command executed successfully: " + action + " - " + resultMessage);
-    Serial.println("Command executed successfully: " + action);
-  } else {
-    pushLog("Command execution failed: " + action + " - " + resultMessage);
-    Serial.println("Command execution failed: " + action + " - " + resultMessage);
-  }
+  reportResult(action, "success");
 }
 
 /******************************************************
@@ -304,37 +225,25 @@ void pollProxy() {
   int code = http.GET();
 
   if (code == 200) {
-
     String payload = http.getString();
 
     StaticJsonDocument<512> doc;
-    DeserializationError err = deserializeJson(doc, payload);
-
-    if (!err && doc.containsKey("action")) {
+    if (!deserializeJson(doc, payload) && doc.containsKey("action")) {
 
       String action = doc["action"].as<String>();
-
-      JsonObject data;
-      if (doc.containsKey("payload")) {
-        data = doc["payload"].as<JsonObject>();
-      }
+      JsonObject data = doc["payload"].as<JsonObject>();
 
       if (action != "none") {
-        pushLog("Received command from server: " + action);
-        Serial.println("Received command: " + action);
         executeCommand(action, data);
-        reportResult(action, "success");
       }
     }
-  } else {
-    Serial.println("Poll HTTP error");
   }
 
   http.end();
 }
 
 /******************************************************
- * ARDUINO OTA
+ * ARDUINO OTA (LOCAL IDE OTA)
  ******************************************************/
 void setupOTA() {
   ArduinoOTA.setHostname(DEVICE_ID);
@@ -353,7 +262,6 @@ void setup() {
 
   connectToStrongestWiFi();
   setupOTA();
-
   sendHealth();
 }
 
@@ -364,18 +272,15 @@ void loop() {
 
   ArduinoOTA.handle();
 
-  // Auto reconnect WiFi
   if (WiFi.status() != WL_CONNECTED) {
     connectToStrongestWiFi();
   }
 
-  // Poll every 3 seconds
   if (millis() - lastPoll > 3000) {
     pollProxy();
     lastPoll = millis();
   }
 
-  // Send health every 60 seconds
   if (millis() - lastHealth > 60000) {
     sendHealth();
     lastHealth = millis();
