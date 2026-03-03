@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Home Automation Dashboard</title>
+    <link rel="stylesheet" href="/css/dashboard.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <h1>🏠 Home Automation Dashboard</h1>
+            <div class="header-actions">
+                <button id="refreshBtn" class="btn btn-primary">🔄 Refresh</button>
+                <span class="last-update" id="lastUpdate">Last update: --</span>
+            </div>
+        </header>
+
+        <!-- Stats Overview -->
+        <section class="stats-section">
+            <div class="stat-card">
+                <div class="stat-icon">📱</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="totalDevices">0</div>
+                    <div class="stat-label">Total Devices</div>
+                </div>
+            </div>
+            <div class="stat-card online">
+                <div class="stat-icon">🟢</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="onlineDevices">0</div>
+                    <div class="stat-label">Online</div>
+                </div>
+            </div>
+            <div class="stat-card offline">
+                <div class="stat-icon">🔴</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="offlineDevices">0</div>
+                    <div class="stat-label">Offline</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">⚡</div>
+                <div class="stat-info">
+                    <div class="stat-value" id="queuedCommands">0</div>
+                    <div class="stat-label">Queued Commands</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Devices Panel -->
+            <section class="devices-panel">
+                <div class="panel-header">
+                    <h2>Devices</h2>
+                    <div class="panel-actions">
+                        <input type="text" id="deviceSearch" placeholder="Search devices..." class="search-input">
+                    </div>
+                </div>
+                <div class="devices-list" id="devicesList">
+                    {{#each devices}}
+                    <div class="device-card" data-device-id="{{this.deviceId}}">
+                        <div class="device-header">
+                            <div class="device-info">
+                                <h3>{{this.deviceId}}</h3>
+                                <span class="device-status {{#if this.onlineStatus}}online{{else}}offline{{/if}}">
+                                    {{#if this.onlineStatus}}🟢 Online{{else}}🔴 Offline{{/if}}
+                                </span>
+                            </div>
+                            <button class="btn-icon" onclick="toggleDeviceDetails('{{this.deviceId}}')">▼</button>
+                        </div>
+                        <div class="device-details" id="details-{{this.deviceId}}" style="display: none;">
+                            <div class="detail-row">
+                                <span class="detail-label">Last Seen:</span>
+                                <span class="detail-value">{{#if this.lastSeen}}{{formatDate this.lastSeen}}{{else}}Never{{/if}}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Queue Length:</span>
+                                <span class="detail-value">{{this.commandQueue.length}}</span>
+                            </div>
+                            {{#if this.health.ip}}
+                            <div class="detail-row">
+                                <span class="detail-label">IP Address:</span>
+                                <span class="detail-value">{{this.health.ip}}</span>
+                            </div>
+                            {{/if}}
+                            {{#if this.health.rssi}}
+                            <div class="detail-row">
+                                <span class="detail-label">WiFi RSSI:</span>
+                                <span class="detail-value">{{this.health.rssi}} dBm</span>
+                            </div>
+                            {{/if}}
+                            {{#if this.health.heap}}
+                            <div class="detail-row">
+                                <span class="detail-label">Free Heap:</span>
+                                <span class="detail-value">{{this.health.heap}} bytes</span>
+                            </div>
+                            {{/if}}
+                            <div class="device-actions">
+                                <button class="btn btn-sm btn-primary" onclick="sendCommand('{{this.deviceId}}', 'relay_on')">Relay ON</button>
+                                <button class="btn btn-sm btn-primary" onclick="sendCommand('{{this.deviceId}}', 'relay_off')">Relay OFF</button>
+                                <button class="btn btn-sm btn-secondary" onclick="sendCommand('{{this.deviceId}}', 'led_toggle')">Toggle LED</button>
+                                <button class="btn btn-sm btn-info" onclick="viewLogs('{{this.deviceId}}')">View Logs</button>
+                            </div>
+                        </div>
+                    </div>
+                    {{else}}
+                    <div class="empty-state">
+                        <p>No devices found</p>
+                    </div>
+                    {{/each}}
+                </div>
+            </section>
+
+            <!-- Logs Panel -->
+            <section class="logs-panel">
+                <div class="panel-header">
+                    <h2>Recent Logs</h2>
+                    <div class="panel-actions">
+                        <select id="logDeviceFilter" class="filter-select">
+                            <option value="">All Devices</option>
+                        </select>
+                        <input type="text" id="logSearch" placeholder="Search logs..." class="search-input">
+                    </div>
+                </div>
+                <div class="logs-container" id="logsContainer">
+                    <div class="loading">Loading logs...</div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Command Modal -->
+    <div id="commandModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <h2>Send Command</h2>
+            <form id="commandForm">
+                <div class="form-group">
+                    <label for="commandDeviceId">Device ID:</label>
+                    <input type="text" id="commandDeviceId" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="commandAction">Action:</label>
+                    <select id="commandAction" required>
+                        <option value="relay_on">Relay ON</option>
+                        <option value="relay_off">Relay OFF</option>
+                        <option value="led_toggle">Toggle LED</option>
+                        <option value="ota_update">OTA Update</option>
+                    </select>
+                </div>
+                <div class="form-group" id="otaUrlGroup" style="display: none;">
+                    <label for="otaUrl">OTA URL:</label>
+                    <input type="url" id="otaUrl" placeholder="https://example.com/firmware.bin">
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Send Command</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Logs Modal -->
+    <div id="logsModal" class="modal">
+        <div class="modal-content large">
+            <span class="close" onclick="closeLogsModal()">&times;</span>
+            <h2>Device Logs: <span id="logsDeviceId"></span></h2>
+            <div class="logs-viewer" id="logsViewer">
+                <div class="loading">Loading logs...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/dashboard.js"></script>
+</body>
+</html>
