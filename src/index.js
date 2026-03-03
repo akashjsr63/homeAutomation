@@ -1,83 +1,28 @@
-// src/index.js
+/******************************************************
+ * MAIN APPLICATION ENTRY POINT
+ ******************************************************/
+
 const express = require("express");
 const path = require("path");
 
+// Import database connection
+require("./db/conn");
+
+// Import services
+const { startDeviceStatusService } = require("./services/deviceStatusService");
+
+// Import routes
+const deviceRoutes = require("./routers/device");
+const testRoutes = require("./routers/test");
+const healthRoutes = require("./routers/health");
+const logsRoutes = require("./routers/logs");
+const dashboardRoutes = require("./routers/dashboard");
+
+// Initialize Express app
 const app = express();
 
 /******************************************************
- * IN-MEMORY DATABASE (No external files)
- ******************************************************/
-const devices = {};
-
-/******************************************************
- * DEVICE MODEL (Inline)
- ******************************************************/
-const deviceModel = {
-  getDevice(deviceId) {
-    if (!devices[deviceId]) {
-      devices[deviceId] = {
-        commandQueue: [],
-        logs: [],
-        health: {},
-        results: []
-      };
-    }
-    return devices[deviceId];
-  },
-
-  queueCommand(deviceId, command) {
-    const device = this.getDevice(deviceId);
-    device.commandQueue.push(command);
-  },
-
-  getCommand(deviceId) {
-    const device = this.getDevice(deviceId);
-    return device.commandQueue.shift();
-  },
-
-  saveResult(deviceId, result) {
-    const device = this.getDevice(deviceId);
-    device.results.push(result);
-  },
-
-  saveHealth(deviceId, health) {
-    const device = this.getDevice(deviceId);
-    device.health = health;
-  },
-
-  pushLog(deviceId, log) {
-    const device = this.getDevice(deviceId);
-    device.logs.push({
-      log,
-      ts: Date.now()
-    });
-  }
-};
-
-/******************************************************
- * LONG POLLING (Inline)
- ******************************************************/
-async function longPoll(fn, timeout = 30000, interval = 1000) {
-  const start = Date.now();
-
-  return new Promise((resolve) => {
-    const check = async () => {
-      const result = await fn();
-      if (result) return resolve(result);
-
-      if (Date.now() - start > timeout) {
-        return resolve(null);
-      }
-
-      setTimeout(check, interval);
-    };
-
-    check();
-  });
-}
-
-/******************************************************
- * APP CONFIG
+ * APP CONFIGURATION
  ******************************************************/
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -86,120 +31,63 @@ app.set("view engine", "hbs");
 app.set("views", path.join(__dirname, "views"));
 app.use(express.static(path.join(__dirname, "public")));
 
-/******************************************************
- * ESP32 DEVICE ENDPOINTS
- ******************************************************/
-
-/**
- * LONG POLL FOR COMMANDS
- */
-app.get("/device/commands", async (req, res) => {
-  const deviceId = req.query.device_id;
-  if (!deviceId)
-    return res.status(400).json({ error: "device_id required" });
-
-  const command = await longPoll(
-    () => deviceModel.getCommand(deviceId),
-    30000
-  );
-
-  res.json(command || { action: "none" });
-});
-
-/**
- * REPORT COMMAND RESULT
- */
-app.post("/device/report", (req, res) => {
-  const { device_id, action, result } = req.body;
-  if (!device_id) return res.status(400).end();
-
-  deviceModel.saveResult(device_id, {
-    action,
-    result,
-    ts: Date.now()
-  });
-
-  res.json({ status: "ok" });
-});
-
-/**
- * DEVICE HEALTH
- */
-app.post("/device/health", (req, res) => {
-  const { device_id, ...health } = req.body;
-  if (!device_id) return res.status(400).end();
-
-  deviceModel.saveHealth(device_id, {
-    ...health,
-    ts: Date.now()
-  });
-
-  res.json({ status: "ok" });
-});
-
-/**
- * DEVICE LOGS
- */
-app.post("/device/log", (req, res) => {
-  const { device_id, log } = req.body;
-  if (!device_id || !log) return res.status(400).end();
-
-  deviceModel.pushLog(device_id, log);
-  res.json({ status: "ok" });
+// Handlebars helpers
+const hbs = require("hbs");
+hbs.registerHelper("formatDate", (date) => {
+  if (!date) return "Never";
+  return new Date(date).toLocaleString();
 });
 
 /******************************************************
- * PUBLIC TESTING ENDPOINTS
+ * ROUTES
  ******************************************************/
-
-/**
- * SEND COMMAND
- * Example:
- * /test/command?device_id=esp32device1&action=relay_on
- */
-app.get("/test/command", (req, res) => {
-  const { device_id, action, url } = req.query;
-  if (!device_id || !action) {
-    return res
-      .status(400)
-      .json({ error: "device_id & action required" });
-  }
-
-  const payload = {};
-  if (url) payload.url = url;
-
-  deviceModel.queueCommand(device_id, { action, payload });
-
-  res.json({ status: "queued", device_id, action, payload });
-});
-
-/**
- * FULL DEVICE STATE
- */
-app.get("/test/device/:id", (req, res) => {
-  res.json(deviceModel.getDevice(req.params.id));
-});
-
-/**
- * DEVICE LOGS
- */
-app.get("/test/logs/:id", (req, res) => {
-  res.json(deviceModel.getDevice(req.params.id).logs);
-});
-
-/**
- * BASIC HEALTH CHECK
- */
-app.get("/health", (_, res) => {
-  console.log(`[${new Date().toISOString()}] Health check pinged`);
-  res.send("OK");
-});
+app.use("/", dashboardRoutes);
+app.use("/device", deviceRoutes);
+app.use("/test", testRoutes);
+app.use("/health", healthRoutes);
+app.use("/logs", logsRoutes);
 
 /******************************************************
  * START SERVER (Render Compatible)
  ******************************************************/
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`ESP32 Proxy running on port ${PORT}`);
+  
+  // Start background services
+  startDeviceStatusService();
 });
+
+/******************************************************
+ * GRACEFUL SHUTDOWN
+ ******************************************************/
+const mongoose = require("mongoose");
+const { stopDeviceStatusService } = require("./services/deviceStatusService");
+
+function gracefulShutdown(signal) {
+  console.log(`\n${signal} received. Shutting down gracefully...`);
+  
+  // Stop background services
+  stopDeviceStatusService();
+  
+  // Close server
+  server.close(() => {
+    console.log("HTTP server closed");
+    
+    // Close MongoDB connection
+    mongoose.connection.close(false, () => {
+      console.log("MongoDB connection closed");
+      process.exit(0);
+    });
+  });
+  
+  // Force shutdown after 10 seconds
+  setTimeout(() => {
+    console.error("Forced shutdown after timeout");
+    process.exit(1);
+  }, 10000);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
