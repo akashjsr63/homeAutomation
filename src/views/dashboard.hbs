@@ -102,6 +102,7 @@
                                 <button class="btn btn-sm btn-primary" onclick="sendCommand('{{this.deviceId}}', 'relay_on')">Relay ON</button>
                                 <button class="btn btn-sm btn-primary" onclick="sendCommand('{{this.deviceId}}', 'relay_off')">Relay OFF</button>
                                 <button class="btn btn-sm btn-secondary" onclick="sendCommand('{{this.deviceId}}', 'led_toggle')">Toggle LED</button>
+                                <button class="btn btn-sm btn-warning" onclick="openOtaModal('{{this.deviceId}}')">🔄 OTA Update</button>
                                 <button class="btn btn-sm btn-info" onclick="viewLogs('{{this.deviceId}}')">View Logs</button>
                             </div>
                         </div>
@@ -160,6 +161,39 @@
                     <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- OTA Update Modal -->
+    <div id="otaModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeOtaModal()">&times;</span>
+            <h2>🔄 OTA Firmware Update</h2>
+            <div class="ota-warning">
+                <p><strong>⚠️ Warning:</strong> The device will reboot after a successful update. Make sure the firmware URL is correct and accessible.</p>
+            </div>
+            <form id="otaForm">
+                <div class="form-group">
+                    <label for="otaDeviceId">Device ID:</label>
+                    <input type="text" id="otaDeviceId" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="otaFirmwareUrl">Firmware URL: <span class="required">*</span></label>
+                    <input type="url" id="otaFirmwareUrl" placeholder="https://example.com/firmware.bin" required>
+                    <small class="form-help">Enter the full URL to the firmware binary file (.bin)</small>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="otaConfirm" required>
+                        I confirm that I want to update the firmware and the device will reboot
+                    </label>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-warning">Start OTA Update</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeOtaModal()">Cancel</button>
+                </div>
+            </form>
+            <div id="otaStatus" class="ota-status" style="display: none;"></div>
         </div>
     </div>
 
