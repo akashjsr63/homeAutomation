@@ -153,47 +153,78 @@ void reportResult(String action, String result) {
  * OTA SERVICE (HTTP)
  ******************************************************/
 void performOTA(String firmwareURL) {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    pushLog("OTA Update failed: WiFi not connected");
+    Serial.println("OTA Update failed: WiFi not connected");
+    return;
+  }
 
-  pushLog("Starting OTA...");
+  pushLog("Starting OTA update from: " + firmwareURL);
+  Serial.println("Starting OTA update from: " + firmwareURL);
 
   HTTPClient http;
   http.begin(firmwareURL);
+  http.setTimeout(30000); // 30 second timeout
 
+  pushLog("Downloading firmware...");
+  Serial.println("Downloading firmware...");
+  
   int code = http.GET();
   if (code == 200) {
 
     int len = http.getSize();
+    pushLog("Firmware size: " + String(len) + " bytes");
+    Serial.println("Firmware size: " + String(len) + " bytes");
+
     WiFiClient* stream = http.getStreamPtr();
 
+    pushLog("Initializing OTA update...");
+    Serial.println("Initializing OTA update...");
+    
     if (!Update.begin(len)) {
-      pushLog("OTA Begin Failed");
+      String errorMsg = "OTA Begin Failed. Error: " + String(Update.errorString());
+      pushLog(errorMsg);
+      Serial.println(errorMsg);
       http.end();
       return;
     }
 
+    pushLog("Writing firmware to flash...");
+    Serial.println("Writing firmware to flash...");
+    
     size_t written = Update.writeStream(*stream);
 
     if (written != len) {
-      pushLog("OTA Write Failed");
+      String errorMsg = "OTA Write Failed. Written: " + String(written) + "/" + String(len);
+      pushLog(errorMsg);
+      Serial.println(errorMsg);
       http.end();
       return;
     }
 
+    pushLog("Finalizing OTA update...");
+    Serial.println("Finalizing OTA update...");
+    
     if (Update.end()) {
       if (Update.isFinished()) {
-        pushLog("OTA Success. Rebooting...");
-        delay(1000);
+        pushLog("OTA Update successful! Firmware installed. Rebooting in 2 seconds...");
+        Serial.println("OTA Update successful! Rebooting...");
+        delay(2000);
         ESP.restart();
       } else {
-        pushLog("OTA not finished");
+        pushLog("OTA Update not finished properly");
+        Serial.println("OTA Update not finished properly");
       }
     } else {
-      pushLog("OTA End Failed");
+      String errorMsg = "OTA End Failed. Error: " + String(Update.errorString());
+      pushLog(errorMsg);
+      Serial.println(errorMsg);
     }
 
   } else {
-    pushLog("OTA HTTP Failed");
+    String errorMsg = "OTA HTTP Failed. Code: " + String(code);
+    pushLog(errorMsg);
+    Serial.println(errorMsg);
   }
 
   http.end();
@@ -204,20 +235,58 @@ void performOTA(String firmwareURL) {
  ******************************************************/
 void executeCommand(String action, JsonObject payload) {
 
+  // Log before command execution
+  pushLog("Executing command: " + action);
+  Serial.println("Executing command: " + action);
+
+  bool success = false;
+  String resultMessage = "";
+
   if (action == "relay_on") {
     digitalWrite(RELAY_PIN, HIGH);
+    success = true;
+    resultMessage = "Relay turned ON";
+    Serial.println("Relay turned ON");
   }
   else if (action == "relay_off") {
     digitalWrite(RELAY_PIN, LOW);
+    success = true;
+    resultMessage = "Relay turned OFF";
+    Serial.println("Relay turned OFF");
   }
   else if (action == "led_toggle") {
-    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    bool currentState = digitalRead(LED_PIN);
+    digitalWrite(LED_PIN, !currentState);
+    success = true;
+    resultMessage = "LED toggled to " + String(!currentState ? "ON" : "OFF");
+    Serial.println("LED toggled to " + String(!currentState ? "ON" : "OFF"));
   }
   else if (action == "ota_update") {
     if (payload.containsKey("url")) {
       String url = payload["url"].as<String>();
+      pushLog("OTA Update requested from: " + url);
       performOTA(url);
+      // Note: performOTA handles its own logging and may reboot
+      return; // Exit early as OTA may reboot
+    } else {
+      success = false;
+      resultMessage = "OTA URL missing in payload";
+      Serial.println("OTA Update failed: URL missing");
     }
+  }
+  else {
+    success = false;
+    resultMessage = "Unknown command: " + action;
+    Serial.println("Unknown command: " + action);
+  }
+
+  // Log after command execution
+  if (success) {
+    pushLog("Command executed successfully: " + action + " - " + resultMessage);
+    Serial.println("Command executed successfully: " + action);
+  } else {
+    pushLog("Command execution failed: " + action + " - " + resultMessage);
+    Serial.println("Command execution failed: " + action + " - " + resultMessage);
   }
 }
 
@@ -251,6 +320,8 @@ void pollProxy() {
       }
 
       if (action != "none") {
+        pushLog("Received command from server: " + action);
+        Serial.println("Received command: " + action);
         executeCommand(action, data);
         reportResult(action, "success");
       }
