@@ -5,12 +5,17 @@ on:
     branches:
       - main
     paths:
-      - 'src/main.cpp'
+      - 'src/**'
+      - 'platformio.ini'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write   # REQUIRED for creating releases
 
     steps:
       - name: Checkout repository
@@ -32,3 +37,13 @@ jobs:
         with:
           name: firmware
           path: .pio/build/esp32dev/firmware.bin
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: firmware-${{ github.run_number }}
+          name: Firmware Build ${{ github.run_number }}
+          files: .pio/build/esp32dev/firmware.bin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
