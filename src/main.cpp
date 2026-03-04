@@ -9,7 +9,7 @@
   #include <Update.h>
   #include <ArduinoOTA.h>
   #include <SPI.h>
-  #include <ELECHOUSE_CC1101.h>
+  #include <ELECHOUSE_CC1101_SRC_DRV.h>
   
   /************ CONFIGURATION ************/
   
